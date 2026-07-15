@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ANFOG glider deployments</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.min.css">
+<style>
+  html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+  #map { height: 100%; }
+  .topbar {
+    position: absolute; top: 10px; left: 54px; z-index: 1000;
+    background: rgba(255,255,255,.92); padding: 6px 12px; border-radius: 6px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.3); font-size: 13px;
+  }
+  .topbar b { font-size: 14px; }
+  .popup-table { border-collapse: collapse; font-size: 12px; }
+  .popup-table td { padding: 1px 6px 1px 0; }
+  .popup-table td:first-child { color: #666; }
+  .popup-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .popup-note { color: #888; font-size: 11px; margin-top: 5px; font-style: italic; }
+  /* cluster hover tooltip */
+  .cluster-tip { font-size: 12px; }
+
+  /* full-page diagnostics dashboard */
+  #diag {
+    position: fixed; inset: 0; z-index: 2000; background: #fff;
+    display: none; flex-direction: column;
+  }
+  #diag.open { display: flex; }
+  .diag-head {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 9px 16px; border-bottom: 1px solid #e2e2e2; background: #fafafa;
+  }
+  .diag-head h2 { font-size: 16px; margin: 0 6px 0 0; }
+  .diag-head .sub { font-size: 12px; color: #777; }
+  .diag-head .spacer { flex: 1; }
+  .diag-head label { font-size: 12px; color: #555; }
+  .diag-head select, .diag-head button {
+    font-size: 13px; padding: 5px 10px; border: 1px solid #c4c4c4;
+    border-radius: 6px; background: #fff; cursor: pointer;
+  }
+  .diag-head button.toggle.active { background: #2c5f9e; color: #fff; border-color: #2c5f9e; }
+  #diag-close { font-weight: 600; }
+  .diag-body { flex: 1; display: flex; min-height: 0; gap: 14px; padding: 14px; background: #eef1f5; }
+  .diag-left { width: 46%; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .diag-right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  /* card tiles */
+  .card { background: #fff; border: 2px solid #24537e; border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(16,24,40,.08); display: flex; flex-direction: column;
+    min-height: 0; overflow: hidden; }
+  .diag-right .card { flex: 1; }
+  .diag-left .card:first-child { flex: 1; }
+  .diag-left .card:last-child { flex: 1.2; }
+  .card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 9px 14px; border-bottom: 1px solid #eef0f4; }
+  .card-title { font-size: 13px; font-weight: 650; color: #1f2a44;
+    padding-left: 10px; border-left: 3px solid #2c5f9e; }
+  .card-sub { font-size: 12px; color: #8a93a6; }
+  .card-head .spacer { flex: 1; }
+  .card-head label { font-size: 12px; color: #555; }
+  .card-head select, .card-head button {
+    font-size: 12px; padding: 4px 9px; border: 1px solid #c9cfdb;
+    border-radius: 6px; background: #fff; cursor: pointer;
+  }
+  .card-head button.toggle.active { background: #2c5f9e; color: #fff; border-color: #2c5f9e; }
+  .card-plot { flex: 1; min-height: 0; }
+  /* profile variable + legend row */
+  .var-checks { padding: 8px 14px; border-bottom: 1px solid #eef0f4; display: flex;
+    gap: 12px; flex-wrap: wrap; align-items: center; background: #fbfcfe; }
+  .var-checks label, #check-list label { font-size: 13px; cursor: pointer; user-select: none; }
+  #check-list { display: flex; gap: 12px; flex-wrap: wrap; }
+  .var-checks .lead { font-size: 12px; color: #777; }
+  .var-checks .spacer { flex: 1; }
+  .var-checks select { font-size: 12px; padding: 4px 9px; border: 1px solid #c9cfdb;
+    border-radius: 6px; background: #fff; }
+  .prof-info { font-size: 12px; color: #2c5f9e; }
+  /* custom profile legend + info buttons */
+  .prof-legend { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 6px 14px; font-size: 12px; color: #333; border-bottom: 1px solid #eef0f4; }
+  .leg-item { display: inline-flex; align-items: center; gap: 6px; }
+  .leg-swatch { width: 22px; height: 0; border-top-width: 2.5px; border-top-style: solid; display: inline-block; }
+  .info-btn { width: 16px; height: 16px; border-radius: 50%; border: 1px solid #9aa4b8;
+    background: #fff; color: #5b6a86; font-size: 11px; font-style: italic;
+    font-weight: 700; line-height: 14px; text-align: center; cursor: pointer; padding: 0; }
+  .info-btn:hover { background: #2c5f9e; color: #fff; border-color: #2c5f9e; }
+  .popover { position: fixed; z-index: 2500; max-width: 320px; background: #1f2a44; color: #fff;
+    font-size: 12px; line-height: 1.5; padding: 10px 12px; border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.28); display: none; }
+  .popover.show { display: block; }
+  .diag-note { font-size: 11px; color: #888; padding: 4px 16px; border-top: 1px solid #eee; }
+  .popup-btns { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .popup-btns button {
+    font-size: 12px; padding: 5px 12px; border: 1px solid #2c5f9e;
+    background: #2c5f9e; color: #fff; border-radius: 6px; cursor: pointer; width: 100%;
+  }
+  .popup-btns button.secondary { background: #fff; color: #2c5f9e; }
+  .popup-btns button:hover { background: #21497a; color: #fff; }
+  .popup-img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover;
+    object-position: center; border-radius: 8px; margin-bottom: 8px; background: #eef1f5; }
+  /* map filter bar */
+  .filterbar {
+    position: absolute; top: 10px; right: 12px; z-index: 1000;
+    background: rgba(255,255,255,.95); padding: 7px 12px; border-radius: 8px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.28); font-size: 12px; color: #444;
+    display: flex; gap: 10px; align-items: center;
+  }
+  .filterbar label { display: flex; gap: 4px; align-items: center; }
+  .filterbar select {
+    font-size: 12px; padding: 3px 6px; border: 1px solid #c9cfdb; border-radius: 5px; background: #fff;
+  }
+  .filterbar .fcount { color: #2c5f9e; font-weight: 600; }
+  /* profiles / T-S segmented toggle */
+  .seg { display: inline-flex; border: 1px solid #c9cfdb; border-radius: 6px; overflow: hidden; }
+  .seg button { font-size: 12px; padding: 4px 12px; border: 0; background: #fff; cursor: pointer; }
+  .seg button.active { background: #2c5f9e; color: #fff; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="topbar"><b>ANFOG glider deployments</b> &mdash;
+  <span id="count"></span> shown. Hover a circle for the count, click to zoom, click a marker for details.</div>
+<div class="topbar" id="trackInfo" style="top:46px; display:none;">
+  Track: <b id="track-id"></b>
+  <a href="#" id="track-clear" style="margin-left:8px;">&#10005; clear</a></div>
+<div class="filterbar">
+  <label>Year <select id="f-year"></select></label>
+  <label>Vehicle <select id="f-veh"></select></label>
+  <label>Season <select id="f-season"></select></label>
+  <span class="fcount" id="f-count"></span>
+</div>
+
+<div id="diag">
+  <div class="diag-head">
+    <h2 id="diag-title"></h2>
+    <span class="sub" id="diag-sub"></span>
+    <span class="spacer"></span>
+    <button id="diag-close">✕ Close</button>
+  </div>
+  <div class="diag-body">
+    <div class="diag-left">
+      <div class="card">
+        <div class="card-head"><span class="card-title">Trajectory</span></div>
+        <div id="d-track" class="card-plot"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Depth–time section</span>
+          <span class="card-sub" id="hov-sub"></span>
+          <span class="spacer"></span>
+          <label>Variable
+            <select id="sec-var" title="Depth–time variable"></select>
+          </label>
+          <button id="btn-anom" class="toggle" title="Show temperature anomaly vs seasonal climatology">Anomaly</button>
+        </div>
+        <div id="d-hov" class="card-plot"></div>
+      </div>
+    </div>
+    <div class="diag-right">
+      <div class="card">
+        <div class="card-head">
+          <span class="seg" id="prof-mode">
+            <button data-mode="profiles" class="active">Profiles</button>
+            <button data-mode="ts">T–S</button>
+          </span>
+          <span class="card-sub" id="prof-info"></span>
+          <span class="spacer"></span>
+          <label>Window
+            <select id="win-select" title="Time-averaging window for profiles / T–S">
+              <option value="1.5">± 1.5 h</option>
+              <option value="6">± 6 h</option>
+              <option value="12" selected>± 12 h</option>
+              <option value="24">± 1 day</option>
+              <option value="48">± 2 days</option>
+            </select>
+          </label>
+        </div>
+        <div class="var-checks" id="var-checks">
+          <span class="lead">Variables:</span>
+          <span id="check-list"></span>
+        </div>
+        <div class="prof-legend" id="prof-legend"></div>
+        <div id="d-prof" class="card-plot"></div>
+      </div>
+    </div>
+  </div>
+  <div class="diag-note" id="diag-note"></div>
+</div>
+<div class="popover" id="popover"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script src="deployments.js"></script>
+<script src="climatology.js"></script>
+<script>
+"use strict";
+
+const map = L.map("map").setView([-28, 145], 4);   // Australia-wide default
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: "&copy; OpenStreetMap | Data: IMOS ANFOG via AODN",
+}).addTo(map);
+
+// ---- Clustering -----------------------------------------------------------
+// Handles the "many launches close together" problem at every zoom level:
+// nearby markers merge into a circle labelled with the count; hovering shows
+// a summary; clicking zooms in; at max zoom co-located markers spiderfy.
+const cluster = L.markerClusterGroup({
+  maxClusterRadius: 45,          // px; tune when the full dataset arrives
+  spiderfyOnMaxZoom: true,       // repeat deployments at one site fan out
+  showCoverageOnHover: false,
+  zoomToBoundsOnClick: true,
+});
+
+// Hover tooltip on clusters: "3 deployments"
+cluster.on("clustermouseover", (e) => {
+  const n = e.layer.getChildCount();
+  const sites = [...new Set(e.layer.getAllChildMarkers()
+      .map((m) => m.options.dep.id.replace(/\d+.*$/, "")))];
+  e.layer.bindTooltip(
+    `<span class="cluster-tip"><b>${n} deployment${n > 1 ? "s" : ""}</b><br>` +
+    `${sites.join(", ")}</span>`,
+    { direction: "top" }).openTooltip();
+});
+
+// ---- Markers --------------------------------------------------------------
+function vehicleOf(d) {
+  return d.vehicle || ((d.platform || "").toUpperCase().startsWith("SL") ? "Slocum" : "Seaglider");
+}
+function popupHtml(d) {
+  const veh = vehicleOf(d);
+  return `
+    <img class="popup-img" src="assets/${veh.toLowerCase()}.jpg"
+         onerror="this.style.display='none'" alt="${veh} glider">
+    <div class="popup-title">${d.id} &mdash; ${d.platform} (${veh})</div>
+    <table class="popup-table">
+      <tr><td>Mission</td><td>${d.start} &rarr; ${d.end} (${d.days} d)</td></tr>
+      <tr><td>Launch</td><td>${d.launch_lat.toFixed(3)}&deg;, ${d.launch_lon.toFixed(3)}&deg;</td></tr>
+      <tr><td>Max depth</td><td>${d.max_depth_m} m</td></tr>
+      <tr><td>Profiles</td><td>${d.n_profiles ?? "?"} (up+down casts)</td></tr>
+      <tr><td>Temp range</td><td>${d.temp_min}&ndash;${d.temp_max} &deg;C</td></tr>
+    </table>
+    <div class="popup-btns">
+      <button class="secondary" onclick="zoomToTrack('${d.id}')">⤢ Zoom to track</button>
+      <button onclick="openDiag('${d.id}')">Diagnose data →</button>
+    </div>`;
+}
+
+const trackInfo = document.getElementById("trackInfo");
+document.getElementById("track-clear").addEventListener("click", (e) => {
+  e.preventDefault(); clearTrack();
+});
+
+// One visible track at a time. Deliberately NOT removed on popupclose:
+// zooming out merges the marker into a cluster, which closes the popup,
+// and the track must survive that so the full trajectory can be seen.
+let trackLayer = null;
+
+function clearTrack() {
+  if (trackLayer) { map.removeLayer(trackLayer); trackLayer = null; }
+  trackInfo.style.display = "none";
+}
+
+function showTrack(d) {
+  if (trackLayer) map.removeLayer(trackLayer);
+  trackLayer = L.polyline(d.track, { color: "#d73027", weight: 2, opacity: .8 })
+    .addTo(map);
+  trackLayer.bindTooltip(d.id, { sticky: true });
+  document.getElementById("track-id").textContent = d.id;
+  trackInfo.style.display = "block";
+}
+
+// Clear only on an explicit action: the X button, or clicking empty map.
+map.on("click", clearTrack);
+
+const ALLMARKERS = [];
+for (const d of DEPLOYMENTS) {
+  if (d.launch_lat == null) continue;
+  const m = L.marker([d.launch_lat, d.launch_lon], { dep: d });
+  m.bindTooltip(d.id, { direction: "top" });
+  m.bindPopup(popupHtml(d), { maxWidth: 320, minWidth: 240 });
+  m.on("click", () => showTrack(d));
+  ALLMARKERS.push({ marker: m, dep: d });
+}
+map.addLayer(cluster);
+
+// ---- filters (year / vehicle / season) -----------------------------------
+function seasonSH(m) {
+  return [12, 1, 2].includes(m) ? "Summer" : [3, 4, 5].includes(m) ? "Autumn"
+    : [6, 7, 8].includes(m) ? "Winter" : "Spring";
+}
+const depYear = (d) => d.start.slice(0, 4);
+const depSeason = (d) => seasonSH(+d.start.slice(5, 7));
+const fYear = document.getElementById("f-year");
+const fVeh = document.getElementById("f-veh");
+const fSeason = document.getElementById("f-season");
+function addOpt(sel, val, label) {
+  const o = document.createElement("option"); o.value = val; o.textContent = label; sel.appendChild(o);
+}
+addOpt(fYear, "", "All");
+[...new Set(DEPLOYMENTS.map(depYear))].sort().forEach((y) => addOpt(fYear, y, y));
+addOpt(fVeh, "", "All");
+[...new Set(DEPLOYMENTS.map(vehicleOf))].sort().forEach((v) => addOpt(fVeh, v, v));
+addOpt(fSeason, "", "All");
+["Summer", "Autumn", "Winter", "Spring"].forEach((s) => addOpt(fSeason, s, s));
+
+function applyFilters() {
+  cluster.clearLayers();
+  let n = 0;
+  for (const { marker, dep } of ALLMARKERS) {
+    if (fYear.value && depYear(dep) !== fYear.value) continue;
+    if (fVeh.value && vehicleOf(dep) !== fVeh.value) continue;
+    if (fSeason.value && depSeason(dep) !== fSeason.value) continue;
+    cluster.addLayer(marker); n++;
+  }
+  document.getElementById("f-count").textContent = `${n} / ${ALLMARKERS.length}`;
+  document.getElementById("count").textContent = n + " deployments";
+}
+[fYear, fVeh, fSeason].forEach((s) => (s.onchange = applyFilters));
+applyFilters();
+
+// Fit to data if we only have a few points so far
+if (DEPLOYMENTS.length < 20 && cluster.getLayers().length) {
+  map.fitBounds(cluster.getBounds().pad(0.5));
+}
+
+// Zoom the map to a deployment's full track extent (and draw the track).
+window.zoomToTrack = function (id) {
+  const d = DEPLOYMENTS.find((x) => x.id === id);
+  if (!d || !d.track || d.track.length === 0) return;
+  showTrack(d);
+  map.fitBounds(L.latLngBounds(d.track).pad(0.15));
+};
+
+// ==== Diagnostics dashboard =================================================
+const diag = document.getElementById("diag");
+const trackDiv = document.getElementById("d-track");
+const hovDiv = document.getElementById("d-hov");
+const profDiv = document.getElementById("d-prof");
+const secVarSel = document.getElementById("sec-var");
+const winSelect = document.getElementById("win-select");
+const btnAnom = document.getElementById("btn-anom");
+const noteEl = document.getElementById("diag-note");
+const varChecks = document.getElementById("var-checks");
+
+const RDYLBU_R = [[0,"#313695"],[0.1,"#4575b4"],[0.2,"#74add1"],[0.3,"#abd9e9"],
+  [0.4,"#e0f3f8"],[0.5,"#ffffbf"],[0.6,"#fee090"],[0.7,"#fdae61"],
+  [0.8,"#f46d43"],[0.9,"#d73027"],[1,"#a50026"]];
+const RDBU = [[0,"#2166ac"],[0.25,"#67a9cf"],[0.5,"#f7f7f7"],[0.75,"#ef8a62"],[1,"#b2182b"]];
+const CMAP = { TEMP: RDYLBU_R, PSAL: "Viridis", SIGMA0: "Cividis", DOX2: "YlGnBu",
+  CPHL: "Greens", BBP: "YlOrRd", CDOM: "Electric" };
+const LINECOL = { TEMP: "#d73027", PSAL: "#1a9850", SIGMA0: "#6a3d9a", DOX2: "#2c7fb8",
+  CPHL: "#238b45", BBP: "#d95f0e", CDOM: "#8c510a" };
+
+const FONT = { family: "system-ui, sans-serif", size: 13, color: "#222" };
+const BASE = { responsive: true, displaylogo: false,
+  modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d"] };
+
+// dashboard state
+let D = { id: null, pd: null, secVar: "TEMP", anomaly: false,
+  profVars: null, pinIt: null, hovIt: null };
+
+function loadPlotData(id) {
+  return new Promise((resolve, reject) => {
+    if (window.PLOTDATA && window.PLOTDATA[id]) return resolve(window.PLOTDATA[id]);
+    const s = document.createElement("script");
+    s.src = `plotdata/${id}_plot.js`;
+    s.onload = () => (window.PLOTDATA && window.PLOTDATA[id])
+      ? resolve(window.PLOTDATA[id]) : reject(new Error("no data for " + id));
+    s.onerror = () => reject(new Error("could not load plotdata/" + id + "_plot.js"));
+    document.head.appendChild(s);
+  });
+}
+
+// ---- helpers ----
+function dayToBin(pd, day) {
+  return Math.min(pd.t.length - 1, Math.max(0, Math.round(day * 24 / 2 - 0.5)));
+}
+function binDay(it) { return (it * 2 + 1) / 24; }  // days since launch at bin centre
+function effIt() {
+  return D.hovIt != null ? D.hovIt
+    : (D.pinIt != null ? D.pinIt : Math.floor(D.pd.t.length / 2));
+}
+function nearestTrackIdx(day) {
+  const a = D.pd.track.days; let best = 0, bd = Infinity;
+  for (let i = 0; i < a.length; i++) { const dd = Math.abs(a[i] - day); if (dd < bd) { bd = dd; best = i; } }
+  return best;
+}
+function meanProfile(grid, it, wbins) {
+  const lo = Math.max(0, it - wbins), hi = Math.min(grid[0].length - 1, it + wbins);
+  return grid.map((row) => {
+    let sum = 0, n = 0;
+    for (let c = lo; c <= hi; c++) if (row[c] != null) { sum += row[c]; n++; }
+    return n ? sum / n : null;
+  });
+}
+function seasonOfMonth(m) {
+  return [12, 1, 2].includes(m) ? "summer" : [3, 4, 5].includes(m) ? "autumn"
+    : [6, 7, 8].includes(m) ? "winter" : "spring";
+}
+function seasonAt(it) { return seasonOfMonth(+D.pd.t[it].slice(5, 7)); }
+
+// climatology: available for TEMP only (NSW-wide).
+const CLIM = window.CLIMATOLOGY || null;
+function climAvailable(v) { return v === "TEMP" && CLIM; }
+
+// The climatology has only 4 seasonal knots. Rather than snapping to a season
+// block (which jumps at boundaries), interpolate by day-of-year between the two
+// nearest seasonal centroids (circular over the year). Southern Hemisphere.
+const SEASON_DOY = { summer: 15, autumn: 105, winter: 197, spring: 288 };
+function doy(dateStr) {
+  const d = new Date(dateStr + "Z");
+  return (Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+        - Date.UTC(d.getUTCFullYear(), 0, 1)) / 86400000 + 1;
+}
+// Continuous climatology profile at a date, on the CLIM.depth grid. kind = "no_mhw"|"mhw".
+function climAtDate(dateStr, kind) {
+  const j = doy(dateStr);
+  const pts = Object.entries(SEASON_DOY).map(([s, c]) => ({ s, c })).sort((a, b) => a.c - b.c);
+  let lo = pts[pts.length - 1], hi = pts[0];              // default: wrap (Dec→Jan)
+  for (let i = 0; i < pts.length - 1; i++) {
+    if (j >= pts[i].c && j < pts[i + 1].c) { lo = pts[i]; hi = pts[i + 1]; break; }
+  }
+  let span = (hi.c - lo.c + 365) % 365 || 365;
+  const frac = ((j - lo.c + 365) % 365) / span;
+  const a = CLIM.conditions[lo.s + "_" + kind], b = CLIM.conditions[hi.s + "_" + kind];
+  return a.map((av, i) => (av == null || b[i] == null) ? null : av + frac * (b[i] - av));
+}
+// Resample a CLIM.depth-resolution profile onto arbitrary depths (linear).
+function interpToDepths(prof, depths) {
+  const cd = CLIM.depth;
+  return depths.map((z) => {
+    if (z <= cd[0]) return prof[0];
+    for (let i = 1; i < cd.length; i++) {
+      if (z <= cd[i]) {
+        const a = prof[i - 1], b = prof[i];
+        if (a == null || b == null) return null;
+        const f = (z - cd[i - 1]) / (cd[i] - cd[i - 1]);
+        return a + f * (b - a);
+      }
+    }
+    return null;
+  });
+}
+
+// ---- track (with a highlight marker as trace 1) ----
+function drawTrack() {
+  const pd = D.pd;
+  const base = {
+    type: "scattergl", mode: "markers", x: pd.track.lon, y: pd.track.lat,
+    marker: { size: 5, color: pd.track.days, colorscale: "Viridis",
+      colorbar: { title: { text: "days since<br>launch", side: "right" }, thickness: 12, len: 0.85 } },
+    customdata: pd.track.days,
+    hovertemplate: "%{x:.3f}°E, %{y:.3f}°<br>day %{customdata:.1f}<extra></extra>",
+  };
+  const it = effIt(), hi = nearestTrackIdx(binDay(it));
+  const mark = {
+    type: "scattergl", mode: "markers", x: [pd.track.lon[hi]], y: [pd.track.lat[hi]],
+    marker: { size: 15, color: "rgba(0,0,0,0)", line: { color: "#b2182b", width: 3 } },
+    hoverinfo: "skip", showlegend: false,
+  };
+  Plotly.react(trackDiv, [base, mark], {
+    font: FONT, showlegend: false,
+    paper_bgcolor: "#fff", plot_bgcolor: "#fff", margin: { l: 52, r: 8, t: 12, b: 40 },
+    xaxis: { title: "Longitude (°E)", zeroline: false, gridcolor: "#eee" },
+    yaxis: { title: "Latitude (°)", zeroline: false, gridcolor: "#eee",
+      scaleanchor: "x", scaleratio: 1 / Math.cos(pd.track.lat[0] * Math.PI / 180) },
+  }, BASE);
+}
+function updateTrackHighlight() {
+  const pd = D.pd, hi = nearestTrackIdx(binDay(effIt()));
+  Plotly.restyle(trackDiv, { x: [[pd.track.lon[hi]]], y: [[pd.track.lat[hi]]] }, [1]);
+}
+
+// ---- Hovmöller (section or anomaly) ----
+function guideShape() {
+  return { type: "line", xref: "x", yref: "paper", x0: D.pd.t[effIt()],
+    x1: D.pd.t[effIt()], y0: 0, y1: 1, line: { color: "#111", width: 1.5, dash: "dot" } };
+}
+function drawHov() {
+  const pd = D.pd, v = D.secVar, s = pd.sections[v];
+  let z = s.z, zmin = s.zmin, zmax = s.zmax, cs = CMAP[v] || "Viridis",
+      rev = false, cbTitle = s.units, subtitle = s.label;
+  const anom = D.anomaly && climAvailable(v);
+  if (anom) {
+    // subtract the date-interpolated (non-MHW) baseline, per column & depth
+    const baseCache = {};
+    const baseAt = (ti) => {
+      const day = pd.t[ti].slice(0, 10);
+      if (!(day in baseCache)) baseCache[day] = interpToDepths(climAtDate(pd.t[ti], "no_mhw"), pd.d);
+      return baseCache[day];
+    };
+    z = s.z.map((row, di) => row.map((val, ti) => {
+      if (val == null) return null;
+      const c = baseAt(ti)[di];
+      return c == null ? null : +(val - c).toFixed(3);
+    }));
+    let mx = 0;
+    for (const row of z) for (const val of row) if (val != null) mx = Math.max(mx, Math.abs(val));
+    mx = Math.min(mx, 4);  // clamp scale
+    zmin = -mx; zmax = mx; cs = RDBU; cbTitle = "ΔT °C"; subtitle = "TEMP anomaly vs seasonal mean";
+  }
+  const tr = {
+    type: "heatmap", x: pd.t, y: pd.d, z, zmin, zmax, colorscale: cs, reversescale: rev,
+    colorbar: { title: { text: cbTitle, side: "right" }, thickness: 12, len: 0.85 },
+    hovertemplate: "%{x}<br>%{y:.0f} m<br>%{z}<extra></extra>",
+  };
+  document.getElementById("hov-sub").textContent =
+    anom ? "anomaly vs seasonal mean (ΔT °C)" : `${s.label} (${s.units})`;
+  Plotly.react(hovDiv, [tr], {
+    font: FONT, paper_bgcolor: "#fff", plot_bgcolor: "#f2f2f2", margin: { l: 52, r: 8, t: 12, b: 40 },
+    xaxis: { title: "Date", showspikes: true, spikemode: "across", spikethickness: 1,
+      spikecolor: "#333", spikedash: "solid" },
+    yaxis: { title: "Depth (m)", autorange: "reversed" },
+    shapes: [guideShape()],
+  }, BASE);
+}
+function updateGuide() {
+  Plotly.relayout(hovDiv, { "shapes[0].x0": D.pd.t[effIt()], "shapes[0].x1": D.pd.t[effIt()] });
+}
+
+// ---- profiles (one subplot per checked variable, shared depth axis) ----
+function drawProfiles() {
+  const pd = D.pd, it = effIt();
+  const wbins = Math.round(parseFloat(winSelect.value) / 2);
+  const vars = [...D.profVars].filter((v) => pd.sections[v]);
+  updateProfLegend(vars);
+  if (vars.length === 0) {
+    Plotly.react(profDiv, [], { font: FONT, margin: { t: 30 },
+      annotations: [{ text: "Tick a variable to plot its profile", showarrow: false,
+        xref: "paper", yref: "paper", x: 0.5, y: 0.5, font: { color: "#999" } }] }, BASE);
+    return;
+  }
+  const N = vars.length, gap = 0.06, traces = [], layout = {
+    font: FONT, paper_bgcolor: "#fff", plot_bgcolor: "#fff",
+    margin: { l: 56, r: 12, t: 42, b: 30 }, showlegend: false,
+    yaxis: { domain: [0, 1], autorange: "reversed", title: "Depth (m)", gridcolor: "#eee" },
+  };
+  vars.forEach((v, i) => {
+    const s = pd.sections[v], sfx = i === 0 ? "" : i + 1, xa = "x" + sfx;
+    const lo = i / N + (i ? gap / 2 : 0), hiD = (i + 1) / N - (i < N - 1 ? gap / 2 : 0);
+    layout["xaxis" + sfx] = { domain: [lo, hiD], anchor: "y", side: "top",
+      title: { text: `${s.label} (${s.units})`, font: { size: 11 } },
+      gridcolor: "#eee", tickfont: { size: 10 }, nticks: 4, zeroline: false };
+    const prof = meanProfile(s.z, it, wbins);
+    const keep = prof.map((val, k) => val != null ? k : -1).filter((k) => k >= 0);
+    traces.push({ type: "scatter", mode: "lines", xaxis: xa, yaxis: "y",
+      x: keep.map((k) => prof[k]), y: keep.map((k) => pd.d[k]),
+      line: { color: LINECOL[v] || "#2c5f9e", width: 2.2 }, name: s.label + " (glider)",
+      legendgroup: v, showlegend: true,
+      hovertemplate: "%{x} " + s.units + "<br>%{y:.0f} m<extra>" + s.label + "</extra>" });
+    // climatology overlay on TEMP: date-interpolated seasonal mean + MHW mean
+    if (climAvailable(v)) {
+      for (const [kind, col, dash, nm] of [["no_mhw", "#666", "dash", "seasonal mean"],
+                                           ["mhw", "#b2182b", "dot", "MHW mean"]]) {
+        const cv = climAtDate(pd.t[it], kind);
+        const kd = CLIM.depth.map((z, k) => cv[k] != null ? k : -1).filter((k) => k >= 0);
+        traces.push({ type: "scatter", mode: "lines", xaxis: xa, yaxis: "y",
+          x: kd.map((k) => cv[k]), y: kd.map((k) => CLIM.depth[k]),
+          line: { color: col, width: 1.5, dash }, name: nm, legendgroup: nm, showlegend: true,
+          hovertemplate: "%{x} °C<br>%{y:.0f} m<extra>" + nm + "</extra>" });
+      }
+    }
+  });
+  Plotly.react(profDiv, traces, layout, BASE);
+  document.getElementById("prof-info").textContent =
+    `@ ${pd.t[it].replace("T", " ")} · ±${winSelect.value} h`;
+}
+
+// ---- T–S diagram (salinity vs temperature, coloured by depth) ----
+function drawTS() {
+  const pd = D.pd, it = effIt();
+  const leg = document.getElementById("prof-legend");
+  if (!pd.sections.TEMP || !pd.sections.PSAL) {
+    Plotly.react(profDiv, [], { font: FONT, margin: { t: 30 },
+      annotations: [{ text: "T–S needs temperature and salinity", showarrow: false,
+        xref: "paper", yref: "paper", x: 0.5, y: 0.5, font: { color: "#999" } }] }, BASE);
+    leg.innerHTML = "";
+    return;
+  }
+  const wbins = Math.round(parseFloat(winSelect.value) / 2);
+  const lo = Math.max(0, it - wbins), hi = Math.min(pd.t.length - 1, it + wbins);
+  const T = pd.sections.TEMP.z, S = pd.sections.PSAL.z, depths = pd.d;
+  const xs = [], ys = [], cs = [];
+  for (let di = 0; di < depths.length; di++)
+    for (let ti = lo; ti <= hi; ti++) {
+      const t = T[di][ti], s = S[di][ti];
+      if (t != null && s != null) { xs.push(s); ys.push(t); cs.push(depths[di]); }
+    }
+  const tr = { type: "scattergl", mode: "markers", x: xs, y: ys,
+    marker: { size: 5, color: cs, colorscale: "Viridis", reversescale: true,
+      colorbar: { title: { text: "depth (m)", side: "right" }, thickness: 12, len: 0.85 } },
+    hovertemplate: "S %{x:.2f}<br>T %{y:.2f} °C<br>%{marker.color:.0f} m<extra></extra>" };
+  Plotly.react(profDiv, [tr], {
+    font: FONT, paper_bgcolor: "#fff", plot_bgcolor: "#fff", margin: { l: 58, r: 12, t: 16, b: 46 },
+    xaxis: { title: "Salinity (PSU)", gridcolor: "#eee", zeroline: false },
+    yaxis: { title: "Temperature (°C)", gridcolor: "#eee", zeroline: false },
+  }, BASE);
+  leg.innerHTML = `<span class="leg-item">${xs.length.toLocaleString()} samples within `
+    + `±${winSelect.value} h, coloured by depth. Tight point clouds mark distinct water masses.</span>`;
+  document.getElementById("prof-info").textContent =
+    `@ ${pd.t[it].replace("T", " ")} · ±${winSelect.value} h`;
+}
+
+// dispatch the right-hand panel by mode
+function drawRight() {
+  document.getElementById("var-checks").style.display = D.profMode === "ts" ? "none" : "";
+  if (D.profMode === "ts") drawTS(); else drawProfiles();
+}
+
+// mode toggle (once)
+document.getElementById("prof-mode").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-mode]"); if (!b) return;
+  D.profMode = b.dataset.mode;
+  document.querySelectorAll("#prof-mode button").forEach((x) => x.classList.toggle("active", x === b));
+  drawRight();
+});
+
+// ---- custom profile legend (with info buttons on the reference lines) ----
+const INFO = {
+  seasonal: "<b>Seasonal mean</b><br>Average temperature profile for this time of "
+    + "year under <b>normal, non-heatwave</b> conditions, from the NSW glider "
+    + "climatology (Amandine). Interpolated to the profile's date. Where the glider "
+    + "line sits warmer than this, the water is anomalously warm for the season.",
+  mhw: "<b>MHW mean</b><br>MHW = <b>marine heatwave</b>. Average temperature profile "
+    + "built only from periods classified as marine heatwaves (defined at the surface). "
+    + "If the glider profile hugs this line rather than the seasonal mean, the water "
+    + "column resembles heatwave conditions — and the depth where the two references "
+    + "separate shows how deep the surface heatwave signature reaches.",
+};
+function swatch(color, style) {
+  const s = document.createElement("span");
+  s.className = "leg-swatch"; s.style.borderTopColor = color; s.style.borderTopStyle = style;
+  return s;
+}
+function updateProfLegend(vars) {
+  const leg = document.getElementById("prof-legend");
+  leg.innerHTML = "";
+  vars.forEach((v) => {
+    const item = document.createElement("span"); item.className = "leg-item";
+    item.appendChild(swatch(LINECOL[v] || "#2c5f9e", "solid"));
+    item.appendChild(document.createTextNode(D.pd.sections[v].label));
+    leg.appendChild(item);
+  });
+  if (vars.includes("TEMP") && CLIM) {
+    for (const [nm, col, style, key] of [["seasonal mean", "#666", "dashed", "seasonal"],
+                                         ["MHW mean", "#b2182b", "dotted", "mhw"]]) {
+      const item = document.createElement("span"); item.className = "leg-item";
+      item.appendChild(swatch(col, style));
+      item.appendChild(document.createTextNode(nm));
+      const b = document.createElement("button");
+      b.className = "info-btn"; b.textContent = "i"; b.dataset.info = key;
+      b.setAttribute("aria-label", "Explain " + nm);
+      item.appendChild(b);
+      leg.appendChild(item);
+    }
+  }
+}
+// popover wiring (once)
+document.getElementById("prof-legend").addEventListener("click", (e) => {
+  const btn = e.target.closest(".info-btn"); if (!btn) return;
+  e.stopPropagation();
+  const pop = document.getElementById("popover");
+  pop.innerHTML = INFO[btn.dataset.info];
+  const r = btn.getBoundingClientRect();
+  pop.style.left = Math.min(r.left, window.innerWidth - 340) + "px";
+  pop.style.top = (r.bottom + 8) + "px";
+  pop.classList.add("show");
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".info-btn") && !e.target.closest("#popover"))
+    document.getElementById("popover").classList.remove("show");
+});
+
+// ---- interactive update (hover / click / window / checkbox) ----
+let rafPending = false;
+function refreshInteractive() {
+  if (rafPending) return;
+  rafPending = true;
+  requestAnimationFrame(() => { rafPending = false; updateGuide(); updateTrackHighlight(); drawRight(); });
+}
+
+// ---- build checkboxes ----
+function buildChecks() {
+  const list = document.getElementById("check-list");
+  list.innerHTML = "";
+  for (const [v, s] of Object.entries(D.pd.sections)) {
+    const lab = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.value = v; cb.checked = D.profVars.has(v);
+    cb.onchange = () => { cb.checked ? D.profVars.add(v) : D.profVars.delete(v); drawRight(); };
+    lab.appendChild(cb); lab.appendChild(document.createTextNode(" " + s.label));
+    list.appendChild(lab);
+  }
+}
+
+// ---- open / wire ----
+window.openDiag = async function (id) {
+  document.getElementById("diag-title").textContent = id;
+  document.getElementById("diag-sub").textContent = "loading…";
+  diag.classList.add("open");
+  if (typeof Plotly === "undefined") {
+    document.getElementById("diag-sub").textContent = "Plotly did not load — check your connection.";
+    return;
+  }
+  let pd;
+  try { pd = await loadPlotData(id); }
+  catch (e) { document.getElementById("diag-sub").textContent = e.message; return; }
+  D = { id, pd, secVar: pd.sections.TEMP ? "TEMP" : Object.keys(pd.sections)[0],
+    anomaly: false, profMode: "profiles",
+    profVars: new Set([pd.sections.TEMP ? "TEMP" : Object.keys(pd.sections)[0]]),
+    pinIt: Math.floor(pd.t.length / 2), hovIt: null };
+  document.querySelectorAll("#prof-mode button")
+    .forEach((x) => x.classList.toggle("active", x.dataset.mode === "profiles"));
+
+  secVarSel.innerHTML = "";
+  for (const [v, s] of Object.entries(pd.sections)) {
+    const o = document.createElement("option"); o.value = v; o.textContent = s.label;
+    secVarSel.appendChild(o);
+  }
+  secVarSel.value = D.secVar;
+  document.getElementById("diag-sub").textContent =
+    `${pd.track.start.slice(0, 10)} · ${pd.d.length} depth bins · ${pd.t.length} time bins`
+    + (CLIM ? " · NSW TEMP climatology available" : "");
+  syncAnomBtn();
+  buildChecks();
+  drawTrack(); drawHov(); drawRight();
+  attachHandlersOnce();
+  noteEl.textContent = "Hover the section (or track) to scrub time — the guide line, "
+    + "highlighted track point and profiles update live. Click to pin. On temperature, "
+    + "grey = seasonal mean and red-dotted = marine-heatwave mean (Amandine's NSW climatology).";
+  setTimeout(() => { Plotly.Plots.resize(trackDiv); Plotly.Plots.resize(hovDiv); Plotly.Plots.resize(profDiv); }, 60);
+};
+
+let handlersAttached = false;
+function attachHandlersOnce() {
+  if (handlersAttached) return;
+  handlersAttached = true;
+  hovDiv.on("plotly_hover", (e) => {
+    const it = D.pd.t.indexOf(e.points[0].x);
+    if (it >= 0 && it !== D.hovIt) { D.hovIt = it; refreshInteractive(); }
+  });
+  hovDiv.on("plotly_unhover", () => { if (D.hovIt != null) { D.hovIt = null; refreshInteractive(); } });
+  hovDiv.on("plotly_click", (e) => {
+    const it = D.pd.t.indexOf(e.points[0].x);
+    if (it >= 0) { D.pinIt = it; D.hovIt = null; refreshInteractive(); }
+  });
+  trackDiv.on("plotly_hover", (e) => {
+    if (e.points[0].curveNumber !== 0) return;
+    const it = dayToBin(D.pd, e.points[0].customdata);
+    if (it !== D.hovIt) { D.hovIt = it; refreshInteractive(); }
+  });
+  trackDiv.on("plotly_unhover", () => { if (D.hovIt != null) { D.hovIt = null; refreshInteractive(); } });
+  trackDiv.on("plotly_click", (e) => {
+    if (e.points[0].curveNumber !== 0) return;
+    D.pinIt = dayToBin(D.pd, e.points[0].customdata); D.hovIt = null; refreshInteractive();
+  });
+}
+
+function syncAnomBtn() {
+  const ok = climAvailable(D.secVar);
+  btnAnom.disabled = !ok;
+  btnAnom.style.opacity = ok ? 1 : 0.4;
+  btnAnom.classList.toggle("active", D.anomaly && ok);
+}
+
+secVarSel.onchange = () => {
+  D.secVar = secVarSel.value;
+  if (!climAvailable(D.secVar)) D.anomaly = false;
+  syncAnomBtn(); drawHov();
+};
+btnAnom.onclick = () => {
+  if (!climAvailable(D.secVar)) return;
+  D.anomaly = !D.anomaly; syncAnomBtn(); drawHov();
+};
+winSelect.onchange = () => drawRight();
+document.getElementById("diag-close").onclick = () => diag.classList.remove("open");
+window.addEventListener("resize", () => {
+  if (!diag.classList.contains("open")) return;
+  Plotly.Plots.resize(trackDiv); Plotly.Plots.resize(hovDiv); Plotly.Plots.resize(profDiv);
+});
+</script>
+</body>
+</html>

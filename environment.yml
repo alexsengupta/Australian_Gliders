@@ -1,0 +1,18 @@
+name: gliders
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - jupyterlab          # the notebook app
+  - xarray
+  - netcdf4
+  - pandas
+  - numpy
+  - matplotlib
+  - requests
+  - boto3               # anonymous S3 access to the AODN bucket (fetch scripts)
+  - siphon              # reads THREDDS catalogs (cell 2)
+  - gsw                 # TEOS-10 density (used by our pipeline)
+  - pip
+  - pip:
+      - thredds_crawler # crawls THREDDS for file URLs (cell 3); pip-only
