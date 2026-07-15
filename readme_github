@@ -1,0 +1,8 @@
+#https://github.com/alexsengupta/Australian_Gliders.git
+#virtual environment
+conda activate gliders
+
+
+git add -A
+git commit -m "describe the change"
+git push

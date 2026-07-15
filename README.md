@@ -126,5 +126,9 @@ Climatology by Amandine. Glider photos: see `assets/README_glider_images.md`.
 
 ## Licence
 
-_Add a licence before making the repository public (MIT is a common choice for
-code; note that the IMOS data has its own attribution terms)._
+Code in this repository is released under the [MIT License](LICENSE).
+
+Note that this covers the **code only**. The glider data is from IMOS/ANFOG and
+carries its own attribution and licensing terms (see the AODN / IMOS data usage
+policy); the marine-heatwave climatology and any glider photographs retain their
+respective authors' and sources' terms.

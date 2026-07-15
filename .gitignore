@@ -1,3 +1,6 @@
+# ── Test / scratch ───────────────────────────────────────────────────────────
+_holdout_*/            # deployments held out to test the automated pipeline
+
 # ── Data: rebuilt by the pipeline, hosted on Nectar, not in Git ──────────────
 anfog_data/            # raw NetCDF (~30 GiB)
 anfog_data_viz/        # cleaned visualisation subsets

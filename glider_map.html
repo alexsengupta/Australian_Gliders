@@ -404,7 +404,15 @@ function seasonOfMonth(m) {
 function seasonAt(it) { return seasonOfMonth(+D.pd.t[it].slice(5, 7)); }
 
 // climatology: available for TEMP only (NSW-wide).
-const CLIM = window.CLIMATOLOGY || null;
+// Treat it as present only if the file loaded AND has the expected shape, so a
+// missing OR malformed climatology.js both degrade gracefully (no anomaly / no
+// overlays) instead of throwing. Everything else in the app works regardless.
+const CLIM = (window.CLIMATOLOGY
+  && Array.isArray(window.CLIMATOLOGY.depth) && window.CLIMATOLOGY.depth.length
+  && window.CLIMATOLOGY.conditions
+  && Object.keys(window.CLIMATOLOGY.conditions).length >= 1)
+  ? window.CLIMATOLOGY : null;
+if (window.CLIMATOLOGY && !CLIM) console.warn("climatology.js loaded but malformed — climatology features disabled.");
 function climAvailable(v) { return v === "TEMP" && CLIM; }
 
 // The climatology has only 4 seasonal knots. Rather than snapping to a season
@@ -427,6 +435,7 @@ function climAtDate(dateStr, kind) {
   let span = (hi.c - lo.c + 365) % 365 || 365;
   const frac = ((j - lo.c + 365) % 365) / span;
   const a = CLIM.conditions[lo.s + "_" + kind], b = CLIM.conditions[hi.s + "_" + kind];
+  if (!Array.isArray(a) || !Array.isArray(b)) return CLIM.depth.map(() => null);  // partial climatology
   return a.map((av, i) => (av == null || b[i] == null) ? null : av + frac * (b[i] - av));
 }
 // Resample a CLIM.depth-resolution profile onto arbitrary depths (linear).
@@ -764,6 +773,8 @@ function syncAnomBtn() {
   const ok = climAvailable(D.secVar);
   btnAnom.disabled = !ok;
   btnAnom.style.opacity = ok ? 1 : 0.4;
+  btnAnom.title = ok ? "Show temperature anomaly vs seasonal climatology"
+    : (CLIM ? "Anomaly is available on temperature only" : "Climatology not loaded — anomaly unavailable");
   btnAnom.classList.toggle("active", D.anomaly && ok);
 }
 
