@@ -10,6 +10,7 @@ Rerun after adding deployments (after make_viz_subset.py + extract_deployments.p
 """
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -108,17 +109,28 @@ def build(path: Path) -> dict:
 
 
 def main() -> None:
+    # Incremental: only (re)build a deployment's plot data if its output is
+    # missing or older than the viz file. Pass --force to rebuild everything
+    # (e.g. after changing the binning or the plot-data format).
+    force = "--force" in sys.argv
     OUT_DIR.mkdir(exist_ok=True)
+    built = skipped = 0
     for f in sorted(VIZ_DIR.glob("*_viz.nc")):
+        dep = f.stem.replace("_viz", "")
+        out = OUT_DIR / f"{dep}_plot.js"
+        if not force and out.exists() and out.stat().st_mtime >= f.stat().st_mtime:
+            skipped += 1
+            continue
         data = build(f)
-        out = OUT_DIR / f"{data['id']}_plot.js"
         payload = json.dumps(data, separators=(",", ":"))
         out.write_text(
             f'window.PLOTDATA = window.PLOTDATA || {{}};\n'
             f'window.PLOTDATA["{data["id"]}"] = {payload};\n'
         )
-        print(f"  {out.name}: {out.stat().st_size/1e6:.2f} MB, "
-              f"vars: {list(data['sections'])}")
+        built += 1
+        print(f"  built {out.name}: {out.stat().st_size/1e6:.2f} MB")
+    print(f"plotdata: {built} built, {skipped} up-to-date"
+          + (" (use --force to rebuild all)" if skipped else ""))
 
 
 if __name__ == "__main__":

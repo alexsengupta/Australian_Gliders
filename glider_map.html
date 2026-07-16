@@ -66,6 +66,8 @@
     border-radius: 6px; background: #fff; cursor: pointer;
   }
   .card-head button.toggle.active { background: #2c5f9e; color: #fff; border-color: #2c5f9e; }
+  .card-head .ov { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; }
+  #mld-method { padding: 3px 6px; }
   .card-plot { flex: 1; min-height: 0; }
   /* profile variable + legend row */
   .var-checks { padding: 8px 14px; border-bottom: 1px solid #eef0f4; display: flex;
@@ -137,6 +139,9 @@
     <h2 id="diag-title"></h2>
     <span class="sub" id="diag-sub"></span>
     <span class="spacer"></span>
+    <button id="btn-clim" class="toggle" title="Overlay the regional climatology">Climatology</button>
+    <button id="clim-info" class="info-btn" title="What is this climatology?">i</button>
+    <button id="btn-code" title="Generate Python code / notebook that reproduces this view">⤓ Code</button>
     <button id="diag-close">✕ Close</button>
   </div>
   <div class="diag-body">
@@ -150,6 +155,13 @@
           <span class="card-title">Depth–time section</span>
           <span class="card-sub" id="hov-sub"></span>
           <span class="spacer"></span>
+          <label class="ov" title="Mixed layer depth"><input type="checkbox" id="ov-mld"> MLD</label>
+          <select id="mld-method" title="Mixed layer depth criterion">
+            <option value="d003">σ₀ 0.03</option>
+            <option value="d0125">σ₀ 0.125</option>
+            <option value="t02">T 0.2°C</option>
+          </select>
+          <label class="ov" title="Thermocline (max |dT/dz|)"><input type="checkbox" id="ov-thermo"> Thermocline</label>
           <label>Variable
             <select id="sec-var" title="Depth–time variable"></select>
           </label>
@@ -343,24 +355,29 @@ const profDiv = document.getElementById("d-prof");
 const secVarSel = document.getElementById("sec-var");
 const winSelect = document.getElementById("win-select");
 const btnAnom = document.getElementById("btn-anom");
+const btnClim = document.getElementById("btn-clim");
 const noteEl = document.getElementById("diag-note");
 const varChecks = document.getElementById("var-checks");
+const ovMLD = document.getElementById("ov-mld");
+const ovThermo = document.getElementById("ov-thermo");
+const mldMethodSel = document.getElementById("mld-method");
 
 const RDYLBU_R = [[0,"#313695"],[0.1,"#4575b4"],[0.2,"#74add1"],[0.3,"#abd9e9"],
   [0.4,"#e0f3f8"],[0.5,"#ffffbf"],[0.6,"#fee090"],[0.7,"#fdae61"],
   [0.8,"#f46d43"],[0.9,"#d73027"],[1,"#a50026"]];
 const RDBU = [[0,"#2166ac"],[0.25,"#67a9cf"],[0.5,"#f7f7f7"],[0.75,"#ef8a62"],[1,"#b2182b"]];
 const CMAP = { TEMP: RDYLBU_R, PSAL: "Viridis", SIGMA0: "Cividis", DOX2: "YlGnBu",
-  CPHL: "Greens", BBP: "YlOrRd", CDOM: "Electric" };
+  CPHL: "Greens", BBP: "YlOrRd", CDOM: "Electric", N2: "Portland" };
 const LINECOL = { TEMP: "#d73027", PSAL: "#1a9850", SIGMA0: "#6a3d9a", DOX2: "#2c7fb8",
-  CPHL: "#238b45", BBP: "#d95f0e", CDOM: "#8c510a" };
+  CPHL: "#238b45", BBP: "#d95f0e", CDOM: "#8c510a", N2: "#984ea3" };
 
 const FONT = { family: "system-ui, sans-serif", size: 13, color: "#222" };
 const BASE = { responsive: true, displaylogo: false,
   modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d"] };
 
 // dashboard state
-let D = { id: null, pd: null, secVar: "TEMP", anomaly: false,
+let D = { id: null, pd: null, secVar: "TEMP", anomaly: false, climOn: false,
+  showMLD: false, showThermo: false, mldMethod: "d003",
   profVars: null, pinIt: null, hovIt: null };
 
 function loadPlotData(id) {
@@ -413,7 +430,23 @@ const CLIM = (window.CLIMATOLOGY
   && Object.keys(window.CLIMATOLOGY.conditions).length >= 1)
   ? window.CLIMATOLOGY : null;
 if (window.CLIMATOLOGY && !CLIM) console.warn("climatology.js loaded but malformed — climatology features disabled.");
-function climAvailable(v) { return v === "TEMP" && CLIM; }
+
+// The climatology is region-specific (NSW). It must only be applied to
+// deployments inside its geographic bounds — otherwise a WA or Tasmanian glider
+// would be wrongly compared to a NSW baseline. D.inRegion is set per deployment.
+function median(arr) {
+  const a = arr.filter((x) => x != null).slice().sort((x, y) => x - y);
+  return a.length ? a[a.length >> 1] : NaN;
+}
+function climInRegion(lat, lon) {
+  const b = CLIM && CLIM.bounds;
+  if (!b) return true;                    // no bounds declared -> legacy: apply anywhere
+  return lat >= b.lat[0] && lat <= b.lat[1] && lon >= b.lon[0] && lon <= b.lon[1];
+}
+// A regional climatology *could* apply to this deployment (valid file + in bounds).
+function climApplicable() { return !!(CLIM && D.inRegion); }
+// It is actually shown only for TEMP, in-region, AND when the user opts in (off by default).
+function climAvailable(v) { return v === "TEMP" && climApplicable() && D.climOn; }
 
 // The climatology has only 4 seasonal knots. Rather than snapping to a season
 // block (which jumps at boundaries), interpolate by day-of-year between the two
@@ -452,6 +485,69 @@ function interpToDepths(prof, depths) {
       }
     }
     return null;
+  });
+}
+
+// ---- derived-in-browser quantities (from the binned section grids) ----------
+const GRAV = 9.81, RHO0 = 1025;
+
+// N^2 = (g/rho0) d(sigma0)/dz, computed as the vertical gradient of the binned
+// SIGMA0 grid. Returned as a section-like object so it drops into the UI.
+function deriveN2(pd) {
+  if (!pd.sections.SIGMA0) return null;
+  const s = pd.sections.SIGMA0.z, d = pd.d, nD = d.length, nT = s[0].length;
+  const z = Array.from({ length: nD }, () => new Array(nT).fill(null));
+  for (let i = 1; i < nD - 1; i++) {
+    const dz = d[i + 1] - d[i - 1];
+    for (let j = 0; j < nT; j++) {
+      const a = s[i - 1][j], b = s[i + 1][j];
+      if (a == null || b == null || dz === 0) continue;
+      z[i][j] = +((GRAV / RHO0) * (b - a) / dz).toFixed(7);
+    }
+  }
+  const flat = z.flat().filter((x) => x != null).sort((a, b) => a - b);
+  const pct = (p) => flat.length ? flat[Math.floor(p * (flat.length - 1))] : 0;
+  return { label: "N² (stratification)", units: "s⁻²", z,
+    zmin: pct(0.02), zmax: pct(0.98) };
+}
+
+// Mixed layer depth per time column, by the selected criterion.
+function computeMLD(pd, method) {
+  const d = pd.d, T = pd.sections.TEMP && pd.sections.TEMP.z,
+        S = pd.sections.SIGMA0 && pd.sections.SIGMA0.z;
+  const useT = method === "t02";
+  const grid = useT ? T : S, thr = method === "d0125" ? 0.125 : method === "t02" ? 0.2 : 0.03;
+  if (!grid) return pd.t.map(() => null);
+  return pd.t.map((_, j) => {
+    // reference = shallowest bin at/below ~10 m with data
+    let ref = null, refI = -1;
+    for (let i = 0; i < d.length; i++) {
+      if (d[i] >= 10 && grid[i][j] != null) { ref = grid[i][j]; refI = i; break; }
+    }
+    if (ref == null) for (let i = 0; i < d.length; i++)
+      if (grid[i][j] != null) { ref = grid[i][j]; refI = i; break; }
+    if (ref == null) return null;
+    for (let i = refI + 1; i < d.length; i++) {
+      if (grid[i][j] == null) continue;
+      if (Math.abs(grid[i][j] - ref) >= thr) return d[i];
+    }
+    return null;
+  });
+}
+
+// Thermocline depth per time column = depth of maximum |dT/dz|.
+function computeThermocline(pd) {
+  const d = pd.d, T = pd.sections.TEMP && pd.sections.TEMP.z;
+  if (!T) return pd.t.map(() => null);
+  return pd.t.map((_, j) => {
+    let best = 0, bd = null;
+    for (let i = 1; i < d.length; i++) {
+      const a = T[i - 1][j], b = T[i][j];
+      if (a == null || b == null) continue;
+      const g = Math.abs((b - a) / (d[i] - d[i - 1]));
+      if (g > best) { best = g; bd = (d[i] + d[i - 1]) / 2; }
+    }
+    return best > 0.02 ? bd : null;   // ignore near-flat columns
   });
 }
 
@@ -517,10 +613,24 @@ function drawHov() {
     colorbar: { title: { text: cbTitle, side: "right" }, thickness: 12, len: 0.85 },
     hovertemplate: "%{x}<br>%{y:.0f} m<br>%{z}<extra></extra>",
   };
+  const traces = [tr];
+  // dotted overlays; connectgaps:false so discontinuities break the line
+  if (D.showMLD) {
+    traces.push({ type: "scatter", mode: "lines", x: pd.t, y: computeMLD(pd, D.mldMethod),
+      line: { color: "#000", width: 1.6, dash: "dot" }, connectgaps: false,
+      name: "MLD", hovertemplate: "MLD %{y:.0f} m<extra></extra>" });
+  }
+  if (D.showThermo) {
+    traces.push({ type: "scatter", mode: "lines", x: pd.t, y: computeThermocline(pd),
+      line: { color: "#00bcd4", width: 1.6, dash: "dot" }, connectgaps: false,
+      name: "thermocline", hovertemplate: "thermocline %{y:.0f} m<extra></extra>" });
+  }
   document.getElementById("hov-sub").textContent =
     anom ? "anomaly vs seasonal mean (ΔT °C)" : `${s.label} (${s.units})`;
-  Plotly.react(hovDiv, [tr], {
+  Plotly.react(hovDiv, traces, {
     font: FONT, paper_bgcolor: "#fff", plot_bgcolor: "#f2f2f2", margin: { l: 52, r: 8, t: 12, b: 40 },
+    showlegend: D.showMLD || D.showThermo,
+    legend: { orientation: "h", x: 1, xanchor: "right", y: 1.02, yanchor: "bottom", font: { size: 11 } },
     xaxis: { title: "Date", showspikes: true, spikemode: "across", spikethickness: 1,
       spikecolor: "#333", spikedash: "solid" },
     yaxis: { title: "Depth (m)", autorange: "reversed" },
@@ -654,7 +764,7 @@ function updateProfLegend(vars) {
     item.appendChild(document.createTextNode(D.pd.sections[v].label));
     leg.appendChild(item);
   });
-  if (vars.includes("TEMP") && CLIM) {
+  if (vars.includes("TEMP") && climAvailable("TEMP")) {
     for (const [nm, col, style, key] of [["seasonal mean", "#666", "dashed", "seasonal"],
                                          ["MHW mean", "#b2182b", "dotted", "mhw"]]) {
       const item = document.createElement("span"); item.className = "leg-item";
@@ -668,21 +778,132 @@ function updateProfLegend(vars) {
     }
   }
 }
-// popover wiring (once)
-document.getElementById("prof-legend").addEventListener("click", (e) => {
-  const btn = e.target.closest(".info-btn"); if (!btn) return;
-  e.stopPropagation();
+// popover (shared)
+function showPopover(anchor, html) {
   const pop = document.getElementById("popover");
-  pop.innerHTML = INFO[btn.dataset.info];
-  const r = btn.getBoundingClientRect();
+  pop.innerHTML = html;
+  const r = anchor.getBoundingClientRect();
   pop.style.left = Math.min(r.left, window.innerWidth - 340) + "px";
   pop.style.top = (r.bottom + 8) + "px";
   pop.classList.add("show");
+}
+document.getElementById("prof-legend").addEventListener("click", (e) => {
+  const btn = e.target.closest(".info-btn"); if (!btn) return;
+  e.stopPropagation(); showPopover(btn, INFO[btn.dataset.info]);
 });
 document.addEventListener("click", (e) => {
-  if (!e.target.closest(".info-btn") && !e.target.closest("#popover"))
+  if (!e.target.closest(".info-btn") && !e.target.closest("#btn-code")
+      && !e.target.closest("#popover"))
     document.getElementById("popover").classList.remove("show");
 });
+
+const CLIM_INFO = "<b>Regional climatology</b><br>Mean glider temperature profiles "
+  + "for this region, split by season and by marine-heatwave state (from Amandine's "
+  + "analysis). Shown only inside the region it was built for — currently NSW — and "
+  + "interpolated to each profile's date.<br><br><b>Off by default</b>: it is a coarse "
+  + "reference — one region-wide mean, four seasonal knots, marine heatwaves defined at "
+  + "the surface, and built from the same gliders. A guide, not ground truth.";
+
+// ---- code export: a standalone Python reproducer of the current view ----------
+function codeCells(rec, secVar) {
+  const url = `https://thredds.aodn.org.au/thredds/fileServer/IMOS/ANFOG/${rec.fleet}/${rec.id}/${rec.raw_file}`;
+  return [
+    { md: `# ${rec.id} — Australian Gliders reproducer\nDownloads the raw IMOS/ANFOG NetCDF from AODN, applies QC (flags 1-2), and reproduces the trajectory and a depth-time section.\nRequires: xarray, netCDF4, numpy, matplotlib.` },
+    { code: [
+      `import urllib.request, tempfile, os`,
+      `import numpy as np, xarray as xr`,
+      `import matplotlib.pyplot as plt`,
+      ``,
+      `VAR = "${secVar === "N2" ? "TEMP" : secVar}"   # change to plot another variable (TEMP, PSAL, DOX2, CPHL, ...)`,
+      `URL = "${url}"`,
+      ``,
+      `path = os.path.join(tempfile.gettempdir(), "${rec.raw_file}")`,
+      `if not os.path.exists(path):`,
+      `    print("downloading", URL)`,
+      `    urllib.request.urlretrieve(URL, path)`,
+      `ds = xr.open_dataset(path)`,
+      ``,
+      `print("start:", str(ds.TIME.values[0])[:19])`,
+      `print("end:  ", str(ds.TIME.values[-1])[:19])`,
+      `print("measurements:", int(ds.sizes.get("TIME", 0)))`,
+      `measured = [v for v in ds.data_vars if not v.endswith("_quality_control")]`,
+      `print("variables:", ", ".join(measured))`,
+    ] },
+    { code: [
+      `# QC mask: keep IMOS flags 1 (good) and 2 (probably good)`,
+      `def qc(name):`,
+      `    x = ds[name].astype(float)`,
+      `    f = name + "_quality_control"`,
+      `    return x.where(ds[f].isin([1, 2])) if f in ds else x`,
+    ] },
+    { code: [
+      `# date-coloured trajectory`,
+      `days = (ds.TIME.values - ds.TIME.values[0]) / np.timedelta64(1, "D")`,
+      `fig, ax = plt.subplots(figsize=(6, 6))`,
+      `sc = ax.scatter(ds.LONGITUDE, ds.LATITUDE, c=days, s=4, cmap="viridis")`,
+      `plt.colorbar(sc, ax=ax, label="days since launch")`,
+      `ax.set_xlabel("Longitude (deg E)"); ax.set_ylabel("Latitude (deg)")`,
+      `ax.set_title("${rec.id} trajectory"); plt.show()`,
+    ] },
+    { code: [
+      `# depth-time section for VAR, binned ~2 h x 2 m (mean per cell; the app uses median)`,
+      `val = qc(VAR).values; depth = ds.DEPTH.values; t = ds.TIME.values`,
+      `secs = (t - t.min()) / np.timedelta64(1, "s")`,
+      `tb = np.arange(0, secs.max() + 7200, 7200)`,
+      `db = np.arange(0, np.nanmax(depth) + 2, 2)`,
+      `ok = np.isfinite(val) & np.isfinite(depth)`,
+      `H, _, _ = np.histogram2d(secs[ok], depth[ok], bins=[tb, db], weights=val[ok])`,
+      `N, _, _ = np.histogram2d(secs[ok], depth[ok], bins=[tb, db])`,
+      `grid = np.where(N > 0, H / N, np.nan)`,
+      `tc = t.min() + (tb[:-1] * 1e9).astype("timedelta64[ns]")`,
+      `cmap = "RdYlBu_r" if VAR == "TEMP" else "viridis"`,
+      `fig, ax = plt.subplots(figsize=(12, 4))`,
+      `pm = ax.pcolormesh(tc, db[:-1], grid.T, shading="auto", cmap=cmap)`,
+      `ax.invert_yaxis(); plt.colorbar(pm, ax=ax, label=VAR)`,
+      `ax.set_xlabel("Date"); ax.set_ylabel("Depth (m)")`,
+      `ax.set_title("${rec.id} - " + VAR); plt.show()`,
+    ] },
+  ];
+}
+const splitLines = (s) => s.split("\n").map((l, i, a) => i < a.length - 1 ? l + "\n" : l);
+function genScript(rec, secVar) {
+  let out = "#!/usr/bin/env python3\n";
+  for (const c of codeCells(rec, secVar))
+    out += c.md ? c.md.split("\n").map((l) => "# " + l).join("\n") + "\n\n"
+                : c.code.join("\n") + "\n\n";
+  return out;
+}
+function genNotebook(rec, secVar) {
+  const cells = codeCells(rec, secVar).map((c) => c.md
+    ? { cell_type: "markdown", metadata: {}, source: splitLines(c.md) }
+    : { cell_type: "code", metadata: {}, execution_count: null, outputs: [], source: splitLines(c.code.join("\n")) });
+  return JSON.stringify({ cells, metadata: {
+    kernelspec: { name: "python3", display_name: "Python 3" }, language_info: { name: "python" } },
+    nbformat: 4, nbformat_minor: 5 }, null, 1);
+}
+function downloadText(filename, text, mime) {
+  const blob = new Blob([text], { type: mime });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 100);
+}
+window.exportCode = function (kind) {
+  const rec = DEPLOYMENTS.find((x) => x.id === D.id);
+  if (!rec || !rec.raw_file) { alert("No source-file info for this deployment — rebuild deployments.js."); return; }
+  if (kind === "py") downloadText(rec.id + "_reproduce.py", genScript(rec, D.secVar), "text/x-python");
+  else downloadText(rec.id + "_reproduce.ipynb", genNotebook(rec, D.secVar), "application/x-ipynb+json");
+  document.getElementById("popover").classList.remove("show");
+};
+function codeMenuHtml() {
+  const rec = DEPLOYMENTS.find((x) => x.id === D.id);
+  if (!rec || !rec.raw_file) return "<b>Code export</b><br>Source-file info missing — rebuild deployments.js.";
+  return "<b>Reproduce this view in Python</b><br>Downloads the raw file from AODN and plots "
+    + `the date-coloured track and the <b>${D.secVar === "N2" ? "TEMP" : D.secVar}</b> section `
+    + "(the variable is a one-line change at the top).<br><br>"
+    + '<a href="#" onclick="exportCode(\'ipynb\');return false;" style="color:#9ecbff">&#8595; Jupyter notebook (.ipynb)</a>'
+    + '<br><a href="#" onclick="exportCode(\'py\');return false;" style="color:#9ecbff">&#8595; Python script (.py)</a>';
+}
 
 // ---- interactive update (hover / click / window / checkbox) ----
 let rafPending = false;
@@ -718,12 +939,18 @@ window.openDiag = async function (id) {
   let pd;
   try { pd = await loadPlotData(id); }
   catch (e) { document.getElementById("diag-sub").textContent = e.message; return; }
+  // derive N² in-browser from the binned density grid, and add it as a variable
+  const n2 = deriveN2(pd);
+  if (n2) pd.sections.N2 = n2;
+  const mlat = median(pd.track.lat), mlon = median(pd.track.lon);
   D = { id, pd, secVar: pd.sections.TEMP ? "TEMP" : Object.keys(pd.sections)[0],
-    anomaly: false, profMode: "profiles",
+    anomaly: false, climOn: false, profMode: "profiles", inRegion: climInRegion(mlat, mlon),
+    showMLD: false, showThermo: false, mldMethod: mldMethodSel.value,
     profVars: new Set([pd.sections.TEMP ? "TEMP" : Object.keys(pd.sections)[0]]),
     pinIt: Math.floor(pd.t.length / 2), hovIt: null };
   document.querySelectorAll("#prof-mode button")
     .forEach((x) => x.classList.toggle("active", x.dataset.mode === "profiles"));
+  ovMLD.checked = false; ovThermo.checked = false;
 
   secVarSel.innerHTML = "";
   for (const [v, s] of Object.entries(pd.sections)) {
@@ -733,8 +960,10 @@ window.openDiag = async function (id) {
   secVarSel.value = D.secVar;
   document.getElementById("diag-sub").textContent =
     `${pd.track.start.slice(0, 10)} · ${pd.d.length} depth bins · ${pd.t.length} time bins`
-    + (CLIM ? " · NSW TEMP climatology available" : "");
+    + (climApplicable() ? ` · ${CLIM.region} climatology available`
+       : (CLIM ? " · outside climatology region" : ""));
   syncAnomBtn();
+  syncClimBtn();
   buildChecks();
   drawTrack(); drawHov(); drawRight();
   attachHandlersOnce();
@@ -774,8 +1003,20 @@ function syncAnomBtn() {
   btnAnom.disabled = !ok;
   btnAnom.style.opacity = ok ? 1 : 0.4;
   btnAnom.title = ok ? "Show temperature anomaly vs seasonal climatology"
-    : (CLIM ? "Anomaly is available on temperature only" : "Climatology not loaded — anomaly unavailable");
+    : (!CLIM ? "Climatology not loaded — anomaly unavailable"
+       : !D.inRegion ? `Climatology covers ${CLIM.region} only — not this deployment`
+       : !D.climOn ? "Turn on Climatology (top bar) to use the anomaly"
+       : "Anomaly is available on temperature only");
   btnAnom.classList.toggle("active", D.anomaly && ok);
+}
+function syncClimBtn() {
+  const applic = climApplicable();
+  btnClim.disabled = !applic;
+  btnClim.style.opacity = applic ? 1 : 0.4;
+  btnClim.classList.toggle("active", applic && D.climOn);
+  btnClim.title = applic
+    ? (D.climOn ? `${CLIM.region} climatology shown — click to hide` : `Overlay the ${CLIM.region} climatology`)
+    : (CLIM ? `Climatology covers ${CLIM.region} only — not this deployment` : "No climatology loaded");
 }
 
 secVarSel.onchange = () => {
@@ -786,6 +1027,21 @@ secVarSel.onchange = () => {
 btnAnom.onclick = () => {
   if (!climAvailable(D.secVar)) return;
   D.anomaly = !D.anomaly; syncAnomBtn(); drawHov();
+};
+btnClim.onclick = () => {
+  if (!climApplicable()) return;
+  D.climOn = !D.climOn;
+  if (!D.climOn) D.anomaly = false;
+  syncClimBtn(); syncAnomBtn(); drawHov(); drawRight();
+};
+ovMLD.onchange = () => { D.showMLD = ovMLD.checked; drawHov(); };
+ovThermo.onchange = () => { D.showThermo = ovThermo.checked; drawHov(); };
+mldMethodSel.onchange = () => { D.mldMethod = mldMethodSel.value; if (D.showMLD) drawHov(); };
+document.getElementById("clim-info").onclick = (e) => {
+  e.stopPropagation(); showPopover(e.currentTarget, CLIM_INFO);
+};
+document.getElementById("btn-code").onclick = (e) => {
+  e.stopPropagation(); showPopover(e.currentTarget, codeMenuHtml());
 };
 winSelect.onchange = () => drawRight();
 document.getElementById("diag-close").onclick = () => diag.classList.remove("open");

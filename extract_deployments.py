@@ -45,10 +45,14 @@ def summarise(path: Path) -> dict:
     # ANFOG fleet is two vehicle types. Slocum hull codes start "SL"; the deep
     # ~1000 m Seagliders are the other class. Refine this when going national.
     vehicle = "Slocum" if platform.upper().startswith("SL") else "Seaglider"
+    fleet = "slocum_glider" if vehicle == "Slocum" else "seaglider"
     rec = {
         "id": path.stem.replace("_viz", ""),
         "platform": platform,
         "vehicle": vehicle,
+        # raw source file + fleet, so the app's code-export can build the AODN URL
+        "raw_file": str(ds.attrs.get("source_file", "")),
+        "fleet": fleet,
         "launch_lat": launch_lat,
         "launch_lon": launch_lon,
         "end_lat": float(lat[i_last]) if ok[i_last] else None,
