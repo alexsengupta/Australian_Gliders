@@ -123,7 +123,8 @@
 <body>
 <div id="map"></div>
 <div class="topbar"><b>ANFOG glider deployments</b> &mdash;
-  <span id="count"></span> shown. Hover a circle for the count, click to zoom, click a marker for details.</div>
+  <span id="count"></span> shown. Hover a circle for the count, click to zoom, click a marker for details.
+  <span style="color:#888">· app by Alex Sengupta · climatology by Amandine</span></div>
 <div class="topbar" id="trackInfo" style="top:46px; display:none;">
   Track: <b id="track-id"></b>
   <a href="#" id="track-clear" style="margin-left:8px;">&#10005; clear</a></div>
@@ -213,8 +214,18 @@
 const map = L.map("map").setView([-28, 145], 4);   // Australia-wide default
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
-  attribution: "&copy; OpenStreetMap | Data: IMOS ANFOG via AODN",
+  attribution: "&copy; OpenStreetMap | Data: IMOS ANFOG via AODN | App: Alex Sengupta",
 }).addTo(map);
+
+// Faint boxes showing the climatology regions (where the seasonal/MHW reference applies).
+if (window.CLIMATOLOGY && Array.isArray(window.CLIMATOLOGY.regions)) {
+  for (const r of window.CLIMATOLOGY.regions) {
+    if (!r.bounds) continue;
+    L.rectangle([[r.bounds.lat[0], r.bounds.lon[0]], [r.bounds.lat[1], r.bounds.lon[1]]],
+      { color: "#2c5f9e", weight: 1, dashArray: "5", fill: false, interactive: false })
+      .addTo(map);
+  }
+}
 
 // ---- Clustering -----------------------------------------------------------
 // Handles the "many launches close together" problem at every zoom level:
@@ -420,33 +431,35 @@ function seasonOfMonth(m) {
 }
 function seasonAt(it) { return seasonOfMonth(+D.pd.t[it].slice(5, 7)); }
 
-// climatology: available for TEMP only (NSW-wide).
-// Treat it as present only if the file loaded AND has the expected shape, so a
-// missing OR malformed climatology.js both degrade gracefully (no anomaly / no
-// overlays) instead of throwing. Everything else in the app works regardless.
+// climatology: multi-region, multi-variable (from Amandine's regional means).
+// Present only if the file loaded and has the expected shape, so a missing OR
+// malformed climatology.js degrades gracefully (everything else still works).
 const CLIM = (window.CLIMATOLOGY
   && Array.isArray(window.CLIMATOLOGY.depth) && window.CLIMATOLOGY.depth.length
-  && window.CLIMATOLOGY.conditions
-  && Object.keys(window.CLIMATOLOGY.conditions).length >= 1)
+  && Array.isArray(window.CLIMATOLOGY.regions) && window.CLIMATOLOGY.regions.length)
   ? window.CLIMATOLOGY : null;
 if (window.CLIMATOLOGY && !CLIM) console.warn("climatology.js loaded but malformed — climatology features disabled.");
 
-// The climatology is region-specific (NSW). It must only be applied to
-// deployments inside its geographic bounds — otherwise a WA or Tasmanian glider
-// would be wrongly compared to a NSW baseline. D.inRegion is set per deployment.
 function median(arr) {
   const a = arr.filter((x) => x != null).slice().sort((x, y) => x - y);
   return a.length ? a[a.length >> 1] : NaN;
 }
-function climInRegion(lat, lon) {
-  const b = CLIM && CLIM.bounds;
-  if (!b) return true;                    // no bounds declared -> legacy: apply anywhere
-  return lat >= b.lat[0] && lat <= b.lat[1] && lon >= b.lon[0] && lon <= b.lon[1];
+// The climatology is region-boxed. Find the region whose bounds contain a point,
+// so a WA glider gets the WA baseline and a Tasmanian one the TAS baseline.
+function regionFor(lat, lon) {
+  if (!CLIM) return null;
+  for (const r of CLIM.regions) {
+    const b = r.bounds; if (!b) continue;
+    if (lat >= b.lat[0] && lat <= b.lat[1] && lon >= b.lon[0] && lon <= b.lon[1]) return r;
+  }
+  return null;
 }
-// A regional climatology *could* apply to this deployment (valid file + in bounds).
-function climApplicable() { return !!(CLIM && D.inRegion); }
-// It is actually shown only for TEMP, in-region, AND when the user opts in (off by default).
-function climAvailable(v) { return v === "TEMP" && climApplicable() && D.climOn; }
+// A regional climatology applies to this deployment (it falls in a region box).
+function climApplicable() { return !!D.climRegion; }
+// A variable has climatology if the region carries it (TEMP/PSAL/CPHL/DOX2).
+function climHasVar(v) { return !!(D.climRegion && D.climRegion.vars[v]); }
+// Actually shown: variable present in-region AND the user has opted in (off by default).
+function climAvailable(v) { return climApplicable() && D.climOn && climHasVar(v); }
 
 // The climatology has only 4 seasonal knots. Rather than snapping to a season
 // block (which jumps at boundaries), interpolate by day-of-year between the two
@@ -457,8 +470,11 @@ function doy(dateStr) {
   return (Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
         - Date.UTC(d.getUTCFullYear(), 0, 1)) / 86400000 + 1;
 }
-// Continuous climatology profile at a date, on the CLIM.depth grid. kind = "no_mhw"|"mhw".
-function climAtDate(dateStr, kind) {
+// Continuous climatology profile at a date, on the CLIM.depth grid, for the
+// current region + variable. kind = "no_mhw"|"mhw"; field = "mean"|"std".
+function climAtDate(dateStr, kind, v, field = "mean") {
+  const store = D.climRegion && D.climRegion.vars[v] && D.climRegion.vars[v][field];
+  if (!store) return CLIM.depth.map(() => null);
   const j = doy(dateStr);
   const pts = Object.entries(SEASON_DOY).map(([s, c]) => ({ s, c })).sort((a, b) => a.c - b.c);
   let lo = pts[pts.length - 1], hi = pts[0];              // default: wrap (Dec→Jan)
@@ -467,7 +483,7 @@ function climAtDate(dateStr, kind) {
   }
   let span = (hi.c - lo.c + 365) % 365 || 365;
   const frac = ((j - lo.c + 365) % 365) / span;
-  const a = CLIM.conditions[lo.s + "_" + kind], b = CLIM.conditions[hi.s + "_" + kind];
+  const a = store[lo.s + "_" + kind], b = store[hi.s + "_" + kind];
   if (!Array.isArray(a) || !Array.isArray(b)) return CLIM.depth.map(() => null);  // partial climatology
   return a.map((av, i) => (av == null || b[i] == null) ? null : av + frac * (b[i] - av));
 }
@@ -553,31 +569,37 @@ function computeThermocline(pd) {
 
 // ---- track (with a highlight marker as trace 1) ----
 function drawTrack() {
-  const pd = D.pd;
+  const pd = D.pd, lat = pd.track.lat, lon = pd.track.lon;
+  const mn = (a) => a.reduce((m, x) => x < m ? x : m, Infinity);
+  const mx = (a) => a.reduce((m, x) => x > m ? x : m, -Infinity);
   const base = {
-    type: "scattergl", mode: "markers", x: pd.track.lon, y: pd.track.lat,
+    type: "scattergeo", mode: "markers", lon, lat,
     marker: { size: 5, color: pd.track.days, colorscale: "Viridis",
       colorbar: { title: { text: "days since<br>launch", side: "right" }, thickness: 12, len: 0.85 } },
     customdata: pd.track.days,
-    hovertemplate: "%{x:.3f}°E, %{y:.3f}°<br>day %{customdata:.1f}<extra></extra>",
+    hovertemplate: "%{lon:.3f}°E, %{lat:.3f}°<br>day %{customdata:.1f}<extra></extra>",
   };
   const it = effIt(), hi = nearestTrackIdx(binDay(it));
   const mark = {
-    type: "scattergl", mode: "markers", x: [pd.track.lon[hi]], y: [pd.track.lat[hi]],
-    marker: { size: 15, color: "rgba(0,0,0,0)", line: { color: "#b2182b", width: 3 } },
+    type: "scattergeo", mode: "markers", lon: [lon[hi]], lat: [lat[hi]],
+    marker: { size: 14, color: "rgba(0,0,0,0)", line: { color: "#b2182b", width: 3 } },
     hoverinfo: "skip", showlegend: false,
   };
+  const pad = 0.4;
   Plotly.react(trackDiv, [base, mark], {
-    font: FONT, showlegend: false,
-    paper_bgcolor: "#fff", plot_bgcolor: "#fff", margin: { l: 52, r: 8, t: 12, b: 40 },
-    xaxis: { title: "Longitude (°E)", zeroline: false, gridcolor: "#eee" },
-    yaxis: { title: "Latitude (°)", zeroline: false, gridcolor: "#eee",
-      scaleanchor: "x", scaleratio: 1 / Math.cos(pd.track.lat[0] * Math.PI / 180) },
+    font: FONT, showlegend: false, margin: { l: 0, r: 0, t: 6, b: 0 },
+    geo: { resolution: 50, showland: true, landcolor: "#f2efe6",
+      showocean: true, oceancolor: "#eaf1f7",
+      showcoastlines: true, coastlinecolor: "#7a8a99", coastlinewidth: 1,
+      showcountries: false, showframe: false,
+      lataxis: { range: [mn(lat) - pad, mx(lat) + pad] },
+      lonaxis: { range: [mn(lon) - pad, mx(lon) + pad] },
+      projection: { type: "mercator" } },
   }, BASE);
 }
 function updateTrackHighlight() {
   const pd = D.pd, hi = nearestTrackIdx(binDay(effIt()));
-  Plotly.restyle(trackDiv, { x: [[pd.track.lon[hi]]], y: [[pd.track.lat[hi]]] }, [1]);
+  Plotly.restyle(trackDiv, { lon: [[pd.track.lon[hi]]], lat: [[pd.track.lat[hi]]] }, [1]);
 }
 
 // ---- Hovmöller (section or anomaly) ----
@@ -591,22 +613,22 @@ function drawHov() {
       rev = false, cbTitle = s.units, subtitle = s.label;
   const anom = D.anomaly && climAvailable(v);
   if (anom) {
-    // subtract the date-interpolated (non-MHW) baseline, per column & depth
+    // subtract the date-interpolated (non-MHW) regional mean for this variable
     const baseCache = {};
     const baseAt = (ti) => {
       const day = pd.t[ti].slice(0, 10);
-      if (!(day in baseCache)) baseCache[day] = interpToDepths(climAtDate(pd.t[ti], "no_mhw"), pd.d);
+      if (!(day in baseCache)) baseCache[day] = interpToDepths(climAtDate(pd.t[ti], "no_mhw", v, "mean"), pd.d);
       return baseCache[day];
     };
     z = s.z.map((row, di) => row.map((val, ti) => {
       if (val == null) return null;
       const c = baseAt(ti)[di];
-      return c == null ? null : +(val - c).toFixed(3);
+      return c == null ? null : +(val - c).toFixed(4);
     }));
-    let mx = 0;
-    for (const row of z) for (const val of row) if (val != null) mx = Math.max(mx, Math.abs(val));
-    mx = Math.min(mx, 4);  // clamp scale
-    zmin = -mx; zmax = mx; cs = RDBU; cbTitle = "ΔT °C"; subtitle = "TEMP anomaly vs seasonal mean";
+    const flat = z.flat().filter((x) => x != null).map(Math.abs).sort((a, b) => a - b);
+    const mx = flat.length ? flat[Math.floor(0.98 * (flat.length - 1))] || 1e-9 : 1;
+    zmin = -mx; zmax = mx; cs = RDBU; cbTitle = "Δ " + s.units;
+    subtitle = `${s.label} anomaly vs ${D.climRegion.code} seasonal mean`;
   }
   const tr = {
     type: "heatmap", x: pd.t, y: pd.d, z, zmin, zmax, colorscale: cs, reversescale: rev,
@@ -671,16 +693,31 @@ function drawProfiles() {
       line: { color: LINECOL[v] || "#2c5f9e", width: 2.2 }, name: s.label + " (glider)",
       legendgroup: v, showlegend: true,
       hovertemplate: "%{x} " + s.units + "<br>%{y:.0f} m<extra>" + s.label + "</extra>" });
-    // climatology overlay on TEMP: date-interpolated seasonal mean + MHW mean
+    // climatology overlay: seasonal mean (+/- 1 std band) and MHW mean, for any
+    // variable the region carries, interpolated to the profile's date.
     if (climAvailable(v)) {
-      for (const [kind, col, dash, nm] of [["no_mhw", "#666", "dash", "seasonal mean"],
+      const mean = climAtDate(pd.t[it], "no_mhw", v, "mean");
+      const std = climAtDate(pd.t[it], "no_mhw", v, "std");
+      // shaded +/-1 std envelope around the seasonal mean
+      const band = CLIM.depth.map((z, k) =>
+        (mean[k] != null && std[k] != null) ? k : -1).filter((k) => k >= 0);
+      if (band.length) {
+        traces.push({ type: "scatter", mode: "lines", xaxis: xa, yaxis: "y",
+          x: band.map((k) => mean[k] - std[k]), y: band.map((k) => CLIM.depth[k]),
+          line: { width: 0 }, hoverinfo: "skip", showlegend: false });
+        traces.push({ type: "scatter", mode: "lines", xaxis: xa, yaxis: "y",
+          x: band.map((k) => mean[k] + std[k]), y: band.map((k) => CLIM.depth[k]),
+          line: { width: 0 }, fill: "tonextx", fillcolor: "rgba(120,120,120,0.18)",
+          hoverinfo: "skip", showlegend: true, legendgroup: "std", name: "±1 std" });
+      }
+      for (const [kind, col, dash, nm] of [["no_mhw", "#555", "dash", "seasonal mean"],
                                            ["mhw", "#b2182b", "dot", "MHW mean"]]) {
-        const cv = climAtDate(pd.t[it], kind);
+        const cv = climAtDate(pd.t[it], kind, v, "mean");
         const kd = CLIM.depth.map((z, k) => cv[k] != null ? k : -1).filter((k) => k >= 0);
         traces.push({ type: "scatter", mode: "lines", xaxis: xa, yaxis: "y",
           x: kd.map((k) => cv[k]), y: kd.map((k) => CLIM.depth[k]),
           line: { color: col, width: 1.5, dash }, name: nm, legendgroup: nm, showlegend: true,
-          hovertemplate: "%{x} °C<br>%{y:.0f} m<extra>" + nm + "</extra>" });
+          hovertemplate: "%{x} " + s.units + "<br>%{y:.0f} m<extra>" + nm + "</extra>" });
       }
     }
   });
@@ -740,15 +777,15 @@ document.getElementById("prof-mode").addEventListener("click", (e) => {
 
 // ---- custom profile legend (with info buttons on the reference lines) ----
 const INFO = {
-  seasonal: "<b>Seasonal mean</b><br>Average temperature profile for this time of "
-    + "year under <b>normal, non-heatwave</b> conditions, from the NSW glider "
-    + "climatology (Amandine). Interpolated to the profile's date. Where the glider "
-    + "line sits warmer than this, the water is anomalously warm for the season.",
-  mhw: "<b>MHW mean</b><br>MHW = <b>marine heatwave</b>. Average temperature profile "
-    + "built only from periods classified as marine heatwaves (defined at the surface). "
-    + "If the glider profile hugs this line rather than the seasonal mean, the water "
-    + "column resembles heatwave conditions — and the depth where the two references "
-    + "separate shows how deep the surface heatwave signature reaches.",
+  seasonal: "<b>Seasonal mean</b><br>Average glider profile for this time of year under "
+    + "<b>normal, non-heatwave</b> conditions, from the regional climatology (Amandine). "
+    + "Shaded band is ±1 standard deviation. Interpolated to the profile's date; where the "
+    + "glider line sits outside this, the water is anomalous for the season.",
+  mhw: "<b>MHW mean</b><br>MHW = <b>marine heatwave</b>. Average profile built only from "
+    + "periods classified as marine heatwaves (defined at the surface). If the glider profile "
+    + "hugs this line rather than the seasonal mean, the water column resembles heatwave "
+    + "conditions — and the depth where the two references separate shows how deep the "
+    + "surface signature reaches.",
 };
 function swatch(color, style) {
   const s = document.createElement("span");
@@ -764,8 +801,8 @@ function updateProfLegend(vars) {
     item.appendChild(document.createTextNode(D.pd.sections[v].label));
     leg.appendChild(item);
   });
-  if (vars.includes("TEMP") && climAvailable("TEMP")) {
-    for (const [nm, col, style, key] of [["seasonal mean", "#666", "dashed", "seasonal"],
+  if (vars.some((v) => climAvailable(v))) {
+    for (const [nm, col, style, key] of [["seasonal mean ±1σ", "#555", "dashed", "seasonal"],
                                          ["MHW mean", "#b2182b", "dotted", "mhw"]]) {
       const item = document.createElement("span"); item.className = "leg-item";
       item.appendChild(swatch(col, style));
@@ -797,12 +834,14 @@ document.addEventListener("click", (e) => {
     document.getElementById("popover").classList.remove("show");
 });
 
-const CLIM_INFO = "<b>Regional climatology</b><br>Mean glider temperature profiles "
-  + "for this region, split by season and by marine-heatwave state (from Amandine's "
-  + "analysis). Shown only inside the region it was built for — currently NSW — and "
-  + "interpolated to each profile's date.<br><br><b>Off by default</b>: it is a coarse "
-  + "reference — one region-wide mean, four seasonal knots, marine heatwaves defined at "
-  + "the surface, and built from the same gliders. A guide, not ground truth.";
+const CLIM_INFO = "<b>Regional climatology</b><br>Mean glider profiles for this region, "
+  + "split by season as explained in "
+  + "<a href='https://egusphere.copernicus.org/preprints/2025/egusphere-2025-6045/' "
+  + "target='_blank' style='color:#9ecbff'>the accompanying paper (egusphere-2025-6045)</a>, "
+  + "and by marine-heatwave state. Shown only inside the region it was built for (NSW, QLD, SW WA, "
+  + "TAS), and interpolated to each profile's date.<br><br><b>Off by default</b>: it is a "
+  + "coarse reference — one region-wide mean, four seasonal knots, marine heatwaves defined "
+  + "at the surface, built from the same gliders. A guide, not ground truth.";
 
 // ---- code export: a standalone Python reproducer of the current view ----------
 function codeCells(rec, secVar) {
@@ -944,7 +983,7 @@ window.openDiag = async function (id) {
   if (n2) pd.sections.N2 = n2;
   const mlat = median(pd.track.lat), mlon = median(pd.track.lon);
   D = { id, pd, secVar: pd.sections.TEMP ? "TEMP" : Object.keys(pd.sections)[0],
-    anomaly: false, climOn: false, profMode: "profiles", inRegion: climInRegion(mlat, mlon),
+    anomaly: false, climOn: false, profMode: "profiles", climRegion: regionFor(mlat, mlon),
     showMLD: false, showThermo: false, mldMethod: mldMethodSel.value,
     profVars: new Set([pd.sections.TEMP ? "TEMP" : Object.keys(pd.sections)[0]]),
     pinIt: Math.floor(pd.t.length / 2), hovIt: null };
@@ -960,8 +999,8 @@ window.openDiag = async function (id) {
   secVarSel.value = D.secVar;
   document.getElementById("diag-sub").textContent =
     `${pd.track.start.slice(0, 10)} · ${pd.d.length} depth bins · ${pd.t.length} time bins`
-    + (climApplicable() ? ` · ${CLIM.region} climatology available`
-       : (CLIM ? " · outside climatology region" : ""));
+    + (climApplicable() ? ` · ${D.climRegion.code} climatology available`
+       : (CLIM ? " · outside climatology regions" : ""));
   syncAnomBtn();
   syncClimBtn();
   buildChecks();
@@ -1002,11 +1041,11 @@ function syncAnomBtn() {
   const ok = climAvailable(D.secVar);
   btnAnom.disabled = !ok;
   btnAnom.style.opacity = ok ? 1 : 0.4;
-  btnAnom.title = ok ? "Show temperature anomaly vs seasonal climatology"
+  btnAnom.title = ok ? `Show anomaly vs ${D.climRegion.code} seasonal mean`
     : (!CLIM ? "Climatology not loaded — anomaly unavailable"
-       : !D.inRegion ? `Climatology covers ${CLIM.region} only — not this deployment`
+       : !climApplicable() ? "This deployment is outside the climatology regions"
        : !D.climOn ? "Turn on Climatology (top bar) to use the anomaly"
-       : "Anomaly is available on temperature only");
+       : "No climatology for this variable in this region");
   btnAnom.classList.toggle("active", D.anomaly && ok);
 }
 function syncClimBtn() {
@@ -1015,8 +1054,8 @@ function syncClimBtn() {
   btnClim.style.opacity = applic ? 1 : 0.4;
   btnClim.classList.toggle("active", applic && D.climOn);
   btnClim.title = applic
-    ? (D.climOn ? `${CLIM.region} climatology shown — click to hide` : `Overlay the ${CLIM.region} climatology`)
-    : (CLIM ? `Climatology covers ${CLIM.region} only — not this deployment` : "No climatology loaded");
+    ? (D.climOn ? `${D.climRegion.code} climatology shown — click to hide` : `Overlay the ${D.climRegion.code} climatology`)
+    : (CLIM ? "This deployment is outside the climatology regions" : "No climatology loaded");
 }
 
 secVarSel.onchange = () => {
